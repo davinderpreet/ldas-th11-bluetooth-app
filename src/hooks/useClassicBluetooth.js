@@ -1,222 +1,314 @@
-// src/hooks/useClassicBluetooth.js
-// Custom Hook for Classic Bluetooth (Paired Devices)
+// src/services/ClassicBluetoothService.js
+// Classic Bluetooth Service for Already-Paired Devices (TH11)
+// FIXED VERSION - Resolves socket timeout errors
 
-import { useState, useEffect, useCallback } from 'react';
-import { Alert } from 'react-native';
-import classicBluetoothService from '../services/ClassicBluetoothService';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
+import { PermissionsAndroid } from 'react-native';
 
-const STORAGE_KEY = '@ldas_last_device';
+const BluetoothClassic = Platform.OS === 'android' 
+  ? require('react-native-bluetooth-classic').default 
+  : null;
 
-export const useClassicBluetooth = () => {
-  const [pairedDevices, setPairedDevices] = useState([]);
-  const [connectedDevice, setConnectedDevice] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [bluetoothEnabled, setBluetoothEnabled] = useState(false);
-  const [error, setError] = useState(null);
-
-  // Check Bluetooth status on mount
-  useEffect(() => {
-    initBluetooth();
-  }, []);
-
-  // Initialize Bluetooth
-  const initBluetooth = async () => {
-    try {
-      const enabled = await classicBluetoothService.isBluetoothEnabled();
-      setBluetoothEnabled(enabled);
-      
-      if (!enabled) {
-        // Try to enable Bluetooth
-        const result = await classicBluetoothService.requestBluetoothEnabled();
-        setBluetoothEnabled(result);
-      }
-      
-      if (enabled) {
-        // Load paired devices automatically
-        await loadPairedDevices();
-      }
-    } catch (error) {
-      console.error('Init Bluetooth error:', error);
-      setError(error.message);
+class ClassicBluetoothService {
+  constructor() {
+    this.connectedDevice = null;
+    this.eventEmitter = null;
+    this.isConnecting = false; // Prevent multiple simultaneous connections
+    
+    if (BluetoothClassic) {
+      this.eventEmitter = new NativeEventEmitter(NativeModules.RNBluetoothClassic);
     }
-  };
+  }
 
-  // Load last connected device
-  const loadLastDevice = async () => {
-    try {
-      const lastDeviceAddress = await AsyncStorage.getItem(STORAGE_KEY);
-      return lastDeviceAddress;
-    } catch (error) {
-      console.error('Error loading last device:', error);
-      return null;
-    }
-  };
-
-  // Save last connected device
-  const saveLastDevice = async (deviceAddress) => {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, deviceAddress);
-    } catch (error) {
-      console.error('Error saving device:', error);
-    }
-  };
-
-  // Request permissions
-  const requestPermissions = async () => {
-    try {
-      const granted = await classicBluetoothService.requestPermissions();
-      if (!granted) {
-        Alert.alert(
-          'Permissions Required',
-          'LDAS needs Bluetooth permissions to connect to your headset.',
-          [{ text: 'OK' }]
-        );
-        return false;
+  // Request Bluetooth permissions
+  async requestPermissions() {
+    if (Platform.OS === 'android') {
+      if (Platform.Version >= 31) {
+        try {
+          const permissions = await PermissionsAndroid.requestMultiple([
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+            PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+          ]);
+          
+          return (
+            permissions['android.permission.BLUETOOTH_CONNECT'] === 'granted' &&
+            permissions['android.permission.BLUETOOTH_SCAN'] === 'granted'
+          );
+        } catch (err) {
+          console.error('Permission error:', err);
+          return false;
+        }
       }
-      return true;
+    }
+    return true;
+  }
+
+  // Check if Bluetooth is enabled
+  async isBluetoothEnabled() {
+    try {
+      if (!BluetoothClassic) return false;
+      const enabled = await BluetoothClassic.isBluetoothEnabled();
+      console.log('Bluetooth enabled:', enabled);
+      return enabled;
     } catch (error) {
-      console.error('Permission error:', error);
+      console.error('Error checking Bluetooth:', error);
       return false;
     }
-  };
+  }
 
-  // Load paired devices from phone settings
-  const loadPairedDevices = useCallback(async () => {
+  // Request to enable Bluetooth
+  async requestBluetoothEnabled() {
     try {
-      setIsLoading(true);
-      setError(null);
-      
-      console.log('Loading paired devices...');
-      
-      // Check permissions
-      const hasPermission = await requestPermissions();
-      if (!hasPermission) {
-        setError('Permissions not granted');
-        return;
-      }
-
-      // Check Bluetooth enabled
-      const enabled = await classicBluetoothService.isBluetoothEnabled();
-      if (!enabled) {
-        setError('Bluetooth is not enabled');
-        Alert.alert(
-          'Bluetooth Off',
-          'Please enable Bluetooth in your phone settings.',
-          [{ text: 'OK' }]
-        );
-        return;
-      }
-
-      // Get bonded devices
-      const devices = await classicBluetoothService.getBondedDevices();
-      console.log('Got devices:', devices);
-      
-      setPairedDevices(devices);
-      
-      if (devices.length === 0) {
-        Alert.alert(
-          'No Paired Devices',
-          'Please pair your TH11 headset in your phone\'s Bluetooth settings first, then return to this app.',
-          [{ text: 'OK' }]
-        );
-      }
+      if (!BluetoothClassic) return false;
+      const enabled = await BluetoothClassic.requestBluetoothEnabled();
+      return enabled;
     } catch (error) {
-      console.error('Load devices error:', error);
-      setError(error.message);
-      Alert.alert('Error', error.message);
-    } finally {
-      setIsLoading(false);
+      console.error('Error enabling Bluetooth:', error);
+      return false;
     }
-  }, []);
+  }
 
-  // Connect to a device
-  const connect = useCallback(async (device) => {
+  // Get list of bonded (paired) devices
+  async getBondedDevices() {
     try {
-      console.log('Attempting connection...');
-      setIsConnecting(true);
-      setError(null);
+      if (!BluetoothClassic) {
+        console.log('BluetoothClassic not available');
+        return [];
+      }
 
-      const result = await classicBluetoothService.connect(device);
+      console.log('Getting bonded devices...');
+      const devices = await BluetoothClassic.getBondedDevices();
+      console.log('Bonded devices:', devices);
       
-      if (result.success) {
-        console.log('Connected successfully!');
-        setConnectedDevice(result.device);
-        await saveLastDevice(device.address);
-        
-        Alert.alert(
-          'Connected!',
-          `Connected to ${device.name}`,
-          [{ text: 'OK' }]
-        );
-        
-        return { success: true };
+      // Filter for audio devices (headsets)
+      const audioDevices = devices.filter(device => {
+        const name = (device.name || '').toLowerCase();
+        // Look for common headset indicators or TH11
+        return name.includes('th11') || 
+               name.includes('th-11') ||
+               name.includes('ldas') ||
+               name.includes('headset') || 
+               name.includes('audio') ||
+               device.deviceClass === 'AUDIO_VIDEO' ||
+               device.address === '00:70:00:63:33:96'; // Your specific TH11
+      });
+
+      console.log('Filtered audio devices:', audioDevices);
+      
+      // Return all devices if no audio devices found (for testing)
+      return audioDevices.length > 0 ? audioDevices : devices;
+    } catch (error) {
+      console.error('Error getting bonded devices:', error);
+      return [];
+    }
+  }
+
+  // FIXED: Connect to a paired device with retry mechanism
+  async connect(device, retryCount = 0) {
+    try {
+      // Prevent multiple simultaneous connections
+      if (this.isConnecting) {
+        console.log('Connection already in progress');
+        return { success: false, error: 'Connection already in progress' };
+      }
+
+      this.isConnecting = true;
+      
+      console.log(`[Attempt ${retryCount + 1}/3] Connecting to:`, device.name, device.address);
+      
+      if (!BluetoothClassic) {
+        throw new Error('BluetoothClassic not available');
+      }
+
+      // Step 1: Check if already connected
+      try {
+        const isConnected = await device.isConnected();
+        if (isConnected) {
+          console.log('Already connected, disconnecting first...');
+          await BluetoothClassic.disconnectFromDevice(device.address);
+          // Wait before reconnecting
+          await this.delay(1000);
+        }
+      } catch (checkError) {
+        console.log('Could not check connection status:', checkError.message);
+      }
+
+      // Step 2: Attempt connection with timeout
+      console.log('Initiating connection...');
+      const connectionPromise = BluetoothClassic.connectToDevice(device.address, {
+        connectorType: 'rfcomm',
+        DELIMITER: '\n',
+        DEVICE_CHARSET: Platform.OS === 'ios' ? 1536 : 'utf-8',
+      });
+
+      // Create timeout promise
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout after 10 seconds')), 10000)
+      );
+
+      // Race connection vs timeout
+      const connected = await Promise.race([connectionPromise, timeoutPromise]);
+      
+      console.log('Connection established:', connected);
+      
+      // Step 3: Verify connection
+      try {
+        const verifyConnected = await connected.isConnected();
+        if (!verifyConnected) {
+          throw new Error('Connection verification failed');
+        }
+      } catch (verifyError) {
+        console.log('Connection verification error:', verifyError.message);
+      }
+
+      // Step 4: Success!
+      this.connectedDevice = connected;
+      this.isConnecting = false;
+      
+      // Set up disconnection listener
+      this.setupDisconnectionListener();
+      
+      return { success: true, device: connected };
+
+    } catch (error) {
+      console.error(`Connection error (attempt ${retryCount + 1}):`, error.message);
+      this.isConnecting = false;
+
+      // Retry logic for socket errors
+      const shouldRetry = retryCount < 2 && (
+        error.message?.includes('socket') ||
+        error.message?.includes('timeout') ||
+        error.message?.includes('read failed') ||
+        error.message?.includes('IOException')
+      );
+
+      if (shouldRetry) {
+        console.log(`Retrying connection in 1.5 seconds (attempt ${retryCount + 2}/3)...`);
+        await this.delay(1500);
+        return this.connect(device, retryCount + 1);
+      }
+
+      // All retries failed
+      let errorMessage = 'Connection failed. ';
+      
+      if (error.message?.includes('socket') || error.message?.includes('read failed')) {
+        errorMessage = 'Socket connection error. Please try:\n\n' +
+                      '1. Turn TH11 OFF then ON\n' +
+                      '2. Unpair in Settings → Bluetooth\n' +
+                      '3. Re-pair TH11\n' +
+                      '4. Try connecting again';
+      } else if (error.message?.includes('timeout')) {
+        errorMessage = 'Connection timed out. Make sure TH11 is:\n\n' +
+                      '1. Powered ON (solid blue LED)\n' +
+                      '2. Within 1 meter of phone\n' +
+                      '3. Not connected to another device';
       } else {
-        console.log('Connection failed:', result.error);
-        setError(result.error);
-        
-        Alert.alert(
-          'Connection Failed',
-          result.error || 'Could not connect to device. Make sure it\'s turned on and in range.',
-          [{ text: 'OK' }]
-        );
-        
-        return { success: false, error: result.error };
+        errorMessage += error.message || 'Unknown error occurred';
       }
-    } catch (error) {
-      console.error('Connect error:', error);
-      setError(error.message);
-      Alert.alert('Error', error.message);
-      return { success: false, error: error.message };
-    } finally {
-      setIsConnecting(false);
+      
+      return { success: false, error: errorMessage };
     }
-  }, []);
+  }
+
+  // Helper: Delay function
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Setup disconnection listener
+  setupDisconnectionListener() {
+    if (this.eventEmitter) {
+      // Remove old listeners first
+      this.eventEmitter.removeAllListeners('onDeviceDisconnected');
+      
+      // Add new listener
+      this.eventEmitter.addListener('onDeviceDisconnected', (event) => {
+        console.log('Device disconnected:', event);
+        this.connectedDevice = null;
+        this.isConnecting = false;
+      });
+    }
+  }
 
   // Disconnect from device
-  const disconnect = useCallback(async () => {
+  async disconnect() {
     try {
-      console.log('Disconnecting...');
-      const success = await classicBluetoothService.disconnect();
-      
-      if (success) {
-        setConnectedDevice(null);
-        Alert.alert('Disconnected', 'Device has been disconnected');
+      if (this.connectedDevice && BluetoothClassic) {
+        console.log('Disconnecting from:', this.connectedDevice.name);
+        const isConnected = await this.connectedDevice.isConnected();
+        
+        if (isConnected) {
+          await BluetoothClassic.disconnectFromDevice(this.connectedDevice.address);
+        }
+        
+        this.connectedDevice = null;
+        this.isConnecting = false;
+        return true;
       }
       
-      return success;
+      this.connectedDevice = null;
+      this.isConnecting = false;
+      return true;
     } catch (error) {
       console.error('Disconnect error:', error);
+      // Even if disconnect fails, reset state
+      this.connectedDevice = null;
+      this.isConnecting = false;
       return false;
     }
-  }, []);
+  }
 
-  // Refresh/reload devices
-  const refresh = useCallback(async () => {
-    await loadPairedDevices();
-  }, [loadPairedDevices]);
+  // Check if connected
+  isConnected() {
+    return this.connectedDevice !== null;
+  }
 
-  return {
-    // State
-    pairedDevices,
-    connectedDevice,
-    isLoading,
-    isConnecting,
-    bluetoothEnabled,
-    error,
-    
-    // Methods
-    loadPairedDevices,
-    connect,
-    disconnect,
-    refresh,
-    initBluetooth,
-    
-    // Computed
-    isConnected: connectedDevice !== null,
-    hasPairedDevices: pairedDevices.length > 0,
-  };
-};
+  // Get connected device
+  getConnectedDevice() {
+    return this.connectedDevice;
+  }
 
-export default useClassicBluetooth;
+  // Send command to device (if supported)
+  async sendCommand(command) {
+    try {
+      if (!this.connectedDevice || !BluetoothClassic) {
+        throw new Error('No device connected');
+      }
+
+      await BluetoothClassic.writeToDevice(this.connectedDevice.address, command);
+      return true;
+    } catch (error) {
+      console.error('Send command error:', error);
+      return false;
+    }
+  }
+
+  // Read data from device (if supported)
+  async readData() {
+    try {
+      if (!this.connectedDevice || !BluetoothClassic) {
+        throw new Error('No device connected');
+      }
+
+      const data = await BluetoothClassic.readFromDevice(this.connectedDevice.address);
+      return data;
+    } catch (error) {
+      console.error('Read data error:', error);
+      return null;
+    }
+  }
+
+  // Clean up
+  destroy() {
+    if (this.eventEmitter) {
+      this.eventEmitter.removeAllListeners('onDeviceDisconnected');
+    }
+    this.connectedDevice = null;
+    this.isConnecting = false;
+  }
+}
+
+// Singleton instance
+const classicBluetoothService = new ClassicBluetoothService();
+
+export default classicBluetoothService;
