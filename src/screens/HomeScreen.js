@@ -1,5 +1,5 @@
 // src/screens/HomeScreen.js
-// LDAS Premium Home Screen - Industry Leading UI
+// LDAS Home Screen - Classic Bluetooth (Paired Devices)
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -9,67 +9,75 @@ import {
   ScrollView,
   SafeAreaView,
   StatusBar,
-  Switch,
   TouchableOpacity,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Button from '../components/Button';
 import Card from '../components/Card';
-import BatteryIndicator from '../components/BatteryIndicator';
 import VolumeControl from '../components/VolumeControl';
-import { useBluetooth } from '../hooks/useBluetooth';
+import { useClassicBluetooth } from '../hooks/useClassicBluetooth';
 import { colors } from '../styles/colors';
 import { typography } from '../styles/typography';
 import { spacing } from '../styles/spacing';
 
 const HomeScreen = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
-  const [showVolume, setShowVolume] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   
   const {
-    devices,
+    pairedDevices,
     connectedDevice,
-    isScanning,
+    isLoading,
     isConnecting,
-    batteryLevel,
-    signalStrength,
-    signalLabel,
     isConnected,
-    startScan,
+    hasPairedDevices,
+    bluetoothEnabled,
+    error,
+    loadPairedDevices,
     connect,
     disconnect,
-    checkBluetoothStatus,
-  } = useBluetooth();
+    refresh,
+  } = useClassicBluetooth();
 
   const theme = isDarkMode ? 'dark' : 'light';
   const themeColors = isDarkMode ? colors.dark : colors.light;
 
+  // Load devices on mount
   useEffect(() => {
-    checkBluetoothStatus();
-  }, []);
+    if (bluetoothEnabled) {
+      loadPairedDevices();
+    }
+  }, [bluetoothEnabled]);
 
   const handleConnect = async () => {
     if (isConnected) {
       // Disconnect
-      const success = await disconnect();
-      if (success) {
-        Alert.alert('Disconnected', 'Device has been disconnected');
-      }
+      await disconnect();
     } else {
-      // Start scanning for devices
-      await startScan();
+      // Show paired devices
+      if (!hasPairedDevices) {
+        Alert.alert(
+          'No Paired Devices',
+          'Please pair your TH11 headset in your phone\'s Bluetooth settings first:\n\n1. Go to Settings → Bluetooth\n2. Turn on TH11 headset\n3. Tap "TH11" to pair\n4. Return to LDAS app',
+          [
+            { text: 'Open Settings', onPress: () => {/* Could open settings */} },
+            { text: 'Refresh', onPress: () => loadPairedDevices() }
+          ]
+        );
+      }
     }
   };
 
   const handleDeviceSelect = async (device) => {
-    const result = await connect(device);
-    if (result.success) {
-      Alert.alert('Connected!', `Connected to ${device.name}`);
-      setShowVolume(true);
-    } else {
-      Alert.alert('Connection Failed', result.error || 'Could not connect to device');
-    }
+    await connect(device);
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await refresh();
+    setRefreshing(false);
   };
 
   const toggleTheme = () => {
@@ -97,24 +105,12 @@ const HomeScreen = () => {
               </Text>
             </View>
             
-            <View style={styles.headerRight}>
-              {/* Theme Toggle */}
-              <TouchableOpacity
-                style={styles.themeToggle}
-                onPress={toggleTheme}
-              >
-                <Text style={styles.themeIcon}>{isDarkMode ? '☀️' : '🌙'}</Text>
-              </TouchableOpacity>
-              
-              {/* Battery */}
-              {batteryLevel !== null && (
-                <View style={styles.headerBattery}>
-                  <Text style={[styles.batteryText, { color: themeColors.text }]}>
-                    🔋 {batteryLevel}%
-                  </Text>
-                </View>
-              )}
-            </View>
+            <TouchableOpacity
+              style={styles.themeToggle}
+              onPress={toggleTheme}
+            >
+              <Text style={styles.themeIcon}>{isDarkMode ? '☀️' : '🌙'}</Text>
+            </TouchableOpacity>
           </View>
         </SafeAreaView>
       </LinearGradient>
@@ -123,6 +119,13 @@ const HomeScreen = () => {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={colors.primary}
+          />
+        }
       >
         {/* Connection Status Card */}
         <Card variant="elevated" theme={theme} gradient={isConnected}>
@@ -136,161 +139,172 @@ const HomeScreen = () => {
                     {
                       backgroundColor: isConnected
                         ? colors.connected
-                        : isScanning
-                        ? colors.connecting
                         : colors.disconnected,
                     },
                   ]}
                 />
-                {isConnected && (
-                  <View style={styles.pulse} />
-                )}
+                {isConnected && <View style={styles.pulse} />}
               </View>
               
               <View style={styles.statusText}>
-                <Text style={[styles.statusTitle, { color: colors.white }]}>
+                <Text style={[styles.statusTitle, { color: isConnected ? colors.white : themeColors.text }]}>
                   {isConnected
                     ? connectedDevice?.name || 'Connected'
-                    : isScanning
-                    ? 'Scanning...'
-                    : 'Disconnected'}
+                    : 'Not Connected'}
                 </Text>
-                {isConnected && signalStrength !== null && (
-                  <Text style={[styles.statusSubtitle, { color: colors.white80 }]}>
-                    {signalLabel} Signal • {signalStrength}%
-                  </Text>
-                )}
+                <Text style={[styles.statusSubtitle, { color: isConnected ? colors.white80 : themeColors.textSecondary }]}>
+                  {isConnected
+                    ? 'Ready to use'
+                    : hasPairedDevices
+                    ? `${pairedDevices.length} paired device${pairedDevices.length !== 1 ? 's' : ''} available`
+                    : 'No paired devices'}
+                </Text>
               </View>
             </View>
 
             {/* Connection Button */}
-            <Button
-              title={
-                isConnected
-                  ? 'DISCONNECT'
-                  : isScanning
-                  ? 'SCANNING...'
-                  : 'SCAN FOR DEVICES'
-              }
-              onPress={handleConnect}
-              variant={isConnected ? 'danger' : 'primary'}
-              size="huge"
-              loading={isScanning || isConnecting}
-              fullWidth
-              gradient={!isConnected}
-              style={styles.connectionButton}
-            />
+            {!isConnected && (
+              <Button
+                title={
+                  isLoading
+                    ? 'Loading...'
+                    : hasPairedDevices
+                    ? 'Select Device Below'
+                    : 'Pair Headset First'
+                }
+                onPress={handleConnect}
+                variant="primary"
+                size="huge"
+                loading={isLoading}
+                fullWidth
+                gradient
+                disabled={!hasPairedDevices}
+                style={styles.connectionButton}
+              />
+            )}
+
+            {isConnected && (
+              <Button
+                title="DISCONNECT"
+                onPress={disconnect}
+                variant="danger"
+                size="huge"
+                fullWidth
+                style={styles.connectionButton}
+              />
+            )}
           </View>
         </Card>
 
-        {/* Available Devices */}
-        {isScanning && devices.length > 0 && (
-          <Card variant="elevated" theme={theme} style={styles.devicesCard}>
+        {/* Paired Devices List */}
+        {!isConnected && hasPairedDevices && (
+          <Card variant="elevated" theme={theme}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
-              Available Devices
+              Your Paired Devices
             </Text>
-            {devices.map((device) => (
+            <Text style={[styles.sectionSubtitle, { color: themeColors.textSecondary }]}>
+              Tap a device to connect
+            </Text>
+            {pairedDevices.map((device) => (
               <TouchableOpacity
-                key={device.id}
+                key={device.address}
                 style={[
                   styles.deviceItem,
                   { backgroundColor: themeColors.surfaceElevated },
                 ]}
                 onPress={() => handleDeviceSelect(device)}
+                disabled={isConnecting}
               >
-                <Text style={[styles.deviceName, { color: themeColors.text }]}>
-                  📱 {device.name}
-                </Text>
-                <Text style={[styles.deviceId, { color: themeColors.textSecondary }]}>
-                  {device.id.substring(0, 17)}...
-                </Text>
+                <View style={styles.deviceInfo}>
+                  <Text style={[styles.deviceName, { color: themeColors.text }]}>
+                    🎧 {device.name || 'Unknown Device'}
+                  </Text>
+                  <Text style={[styles.deviceId, { color: themeColors.textSecondary }]}>
+                    {device.address}
+                  </Text>
+                </View>
+                {isConnecting && (
+                  <Text style={[styles.connecting, { color: colors.primary }]}>
+                    Connecting...
+                  </Text>
+                )}
               </TouchableOpacity>
             ))}
           </Card>
         )}
 
-        {/* Battery & Controls */}
+        {/* Volume Control (when connected) */}
         {isConnected && (
-          <>
-            {/* Battery Card */}
-            <Card variant="elevated" theme={theme}>
-              <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
-                Battery Status
-              </Text>
-              <View style={styles.batteryContainer}>
-                <BatteryIndicator
-                  level={batteryLevel || 85}
-                  size={140}
-                  charging={false}
-                  theme={theme}
-                />
-                <View style={styles.batteryInfo}>
-                  <Text style={[styles.batteryLabel, { color: themeColors.textSecondary }]}>
-                    Estimated Time
-                  </Text>
-                  <Text style={[styles.batteryTime, { color: themeColors.text }]}>
-                    {Math.floor((batteryLevel || 85) / 12)} hours
-                  </Text>
-                </View>
-              </View>
-            </Card>
-
-            {/* Volume Control Card */}
-            <Card variant="elevated" theme={theme}>
-              <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
-                Volume Control
-              </Text>
-              <VolumeControl theme={theme} />
-            </Card>
-
-            {/* Quick Actions */}
-            <Card variant="elevated" theme={theme}>
-              <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
-                Quick Actions
-              </Text>
-              <View style={styles.quickActions}>
-                <Button
-                  title="Battery History"
-                  onPress={() => Alert.alert('Coming Soon', 'Battery history feature')}
-                  variant="outline"
-                  size="large"
-                  fullWidth
-                  style={styles.actionButton}
-                  theme={theme}
-                />
-                <Button
-                  title="Device Settings"
-                  onPress={() => Alert.alert('Coming Soon', 'Device settings feature')}
-                  variant="outline"
-                  size="large"
-                  fullWidth
-                  theme={theme}
-                />
-              </View>
-            </Card>
-          </>
+          <Card variant="elevated" theme={theme}>
+            <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
+              Volume Control
+            </Text>
+            <VolumeControl theme={theme} />
+          </Card>
         )}
 
-        {/* Getting Started */}
-        {!isConnected && !isScanning && (
+        {/* Instructions (when not paired) */}
+        {!hasPairedDevices && !isLoading && (
           <Card variant="flat" theme={theme}>
             <Text style={[styles.sectionTitle, { color: themeColors.text }]}>
-              Getting Started
+              📱 How to Pair Your TH11 Headset
             </Text>
             <View style={styles.instructions}>
-              <Text style={[styles.instructionText, { color: themeColors.textSecondary }]}>
-                1. Make sure your headset is powered on
-              </Text>
-              <Text style={[styles.instructionText, { color: themeColors.textSecondary }]}>
-                2. Tap "SCAN FOR DEVICES" above
-              </Text>
-              <Text style={[styles.instructionText, { color: themeColors.textSecondary }]}>
-                3. Select your device from the list
-              </Text>
-              <Text style={[styles.instructionText, { color: themeColors.textSecondary }]}>
-                4. Control volume and monitor battery
-              </Text>
+              <View style={styles.instructionStep}>
+                <Text style={[styles.stepNumber, { color: colors.primary }]}>1</Text>
+                <Text style={[styles.instructionText, { color: themeColors.text }]}>
+                  Turn on your TH11 headset and put it in pairing mode
+                </Text>
+              </View>
+              
+              <View style={styles.instructionStep}>
+                <Text style={[styles.stepNumber, { color: colors.primary }]}>2</Text>
+                <Text style={[styles.instructionText, { color: themeColors.text }]}>
+                  Go to your phone's <Text style={{ fontWeight: 'bold' }}>Settings → Bluetooth</Text>
+                </Text>
+              </View>
+              
+              <View style={styles.instructionStep}>
+                <Text style={[styles.stepNumber, { color: colors.primary }]}>3</Text>
+                <Text style={[styles.instructionText, { color: themeColors.text }]}>
+                  Tap on "TH11" in the available devices list to pair
+                </Text>
+              </View>
+              
+              <View style={styles.instructionStep}>
+                <Text style={[styles.stepNumber, { color: colors.primary }]}>4</Text>
+                <Text style={[styles.instructionText, { color: themeColors.text }]}>
+                  Return to LDAS app and pull down to refresh
+                </Text>
+              </View>
             </View>
+
+            <Button
+              title="Refresh Device List"
+              onPress={handleRefresh}
+              variant="primary"
+              size="large"
+              fullWidth
+              style={styles.refreshButton}
+              theme={theme}
+            />
+          </Card>
+        )}
+
+        {/* Error Display */}
+        {error && (
+          <Card variant="outlined" theme={theme} style={styles.errorCard}>
+            <Text style={[styles.errorText, { color: colors.danger }]}>
+              ⚠️ {error}
+            </Text>
+            <Button
+              title="Retry"
+              onPress={handleRefresh}
+              variant="outline"
+              size="small"
+              style={styles.retryButton}
+              theme={theme}
+            />
           </Card>
         )}
       </ScrollView>
@@ -321,25 +335,11 @@ const styles = StyleSheet.create({
     ...typography.caption,
     marginTop: spacing.xs,
   },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   themeToggle: {
     padding: spacing.sm,
-    marginRight: spacing.sm,
   },
   themeIcon: {
-    fontSize: 24,
-  },
-  headerBattery: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.white10,
-    borderRadius: 20,
-  },
-  batteryText: {
-    ...typography.labelSmall,
+    fontSize: 28,
   },
   scrollView: {
     flex: 1,
@@ -390,53 +390,66 @@ const styles = StyleSheet.create({
   connectionButton: {
     marginTop: spacing.md,
   },
-  devicesCard: {
-    marginTop: spacing.md,
-  },
   sectionTitle: {
     ...typography.h3,
+    marginBottom: spacing.sm,
+  },
+  sectionSubtitle: {
+    ...typography.bodySmall,
     marginBottom: spacing.lg,
   },
   deviceItem: {
-    padding: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.lg,
     borderRadius: 12,
     marginBottom: spacing.sm,
+  },
+  deviceInfo: {
+    flex: 1,
   },
   deviceName: {
     ...typography.body,
     fontWeight: '600',
+    marginBottom: spacing.xs,
   },
   deviceId: {
     ...typography.caption,
-    marginTop: spacing.xs,
   },
-  batteryContainer: {
-    alignItems: 'center',
-    paddingVertical: spacing.lg,
-  },
-  batteryInfo: {
-    marginTop: spacing.lg,
-    alignItems: 'center',
-  },
-  batteryLabel: {
+  connecting: {
     ...typography.labelSmall,
   },
-  batteryTime: {
-    ...typography.h2,
-    marginTop: spacing.xs,
-  },
-  quickActions: {
-    gap: spacing.md,
-  },
-  actionButton: {
-    marginBottom: spacing.sm,
-  },
   instructions: {
-    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  instructionStep: {
+    flexDirection: 'row',
+    marginBottom: spacing.lg,
+  },
+  stepNumber: {
+    ...typography.h2,
+    fontWeight: '900',
+    marginRight: spacing.md,
+    width: 32,
   },
   instructionText: {
     ...typography.body,
+    flex: 1,
     lineHeight: 24,
+  },
+  refreshButton: {
+    marginTop: spacing.xl,
+  },
+  errorCard: {
+    borderColor: colors.danger,
+  },
+  errorText: {
+    ...typography.body,
+    marginBottom: spacing.md,
+  },
+  retryButton: {
+    marginTop: spacing.sm,
   },
 });
 
